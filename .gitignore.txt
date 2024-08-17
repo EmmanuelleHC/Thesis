@@ -1,0 +1,6 @@
+# Ignore all CSV files
+*.csv
+
+# Or specifically ignore large CSV files
+Backup 12 08 2024/train.csv
+Backup 12 08 2024/train_with_fuzzy_results (2).csv
