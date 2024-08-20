@@ -13,7 +13,7 @@ import numpy as np
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Load the data
-train_df = pd.read_csv('Thesis/train_with_fuzzy_results.csv')
+train_df = pd.read_csv('Thesis/train_with_fuzzy_results2.csv')
 
 class EdgeGCN_LSTM(nn.Module):
     def __init__(self, hidden_channels, lstm_hidden_channels, out_channels, dropout_rate, num_layers, l2_lambda):
@@ -188,7 +188,6 @@ torch.save({
         'l2_lambda': best_params['l2_lambda'],
         'lr': best_params['lr']
     }
-}, 'gcn_lstm_model.pth')
-print("Model saved as 'gcn_lstm_model.pth'")
+}, 'hybrid_gcn_lstm_model.pth')
 
 
