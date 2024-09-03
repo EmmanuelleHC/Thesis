@@ -12,11 +12,10 @@ producer = KafkaProducer(
     retry_backoff_ms=100  # Wait 100ms between retries
 )
 
-def send_data_with_count_window(filename, batch_size=100, window_size=100000, delay_seconds=2):
+def send_data_with_count_window(filename, batch_size=100, window_size=500, delay_seconds=2):
     # Read the CSV into a DataFrame
     df = pd.read_csv(filename)
     df = df.sort_values(by='Time_step')
-    df=df.head(500)
     window = []
     
     # Iterate over the DataFrame row by row

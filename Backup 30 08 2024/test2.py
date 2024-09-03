@@ -1,49 +1,45 @@
-import json
-import os
-import threading
-import queue
-from datetime import datetime
-import time
-import logging
-import shutil
-import numpy as np
-import pandas as pd
-from scipy.stats import ks_2samp
-from kafka import KafkaConsumer
-import skfuzzy as fuzz
-from skfuzzy import control as ctrl
 import torch
 from torch_geometric.data import Data, DataLoader
 from torch_geometric.nn import GCNConv
 import torch.nn as nn
 import torch.nn.functional as F
+import pandas as pd
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score, roc_curve
-from sklearn.model_selection import train_test_split
+import numpy as np
+import skfuzzy as fuzz
+from skfuzzy import control as ctrl
+import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Load the test dataset
+test_df = pd.read_csv('Thesis/test.csv')
+test_df=test_df.head(10)
+# Setup Fuzzy Logic System
 
 def setup_fuzzy_system():
-    # Define fuzzy logic system
-    cross_border = ctrl.Antecedent(np.arange(0, 1.1, 0.1), 'cross_border')
-    country_risk = ctrl.Antecedent(np.arange(0, 1.1, 0.1), 'country_risk')
-    pep_involvement = ctrl.Antecedent(np.arange(0, 1.1, 0.1), 'pep_involvement')
+    # Antecedents (inputs)
+    cross_border = ctrl.Antecedent(np.arange(0, 2, 1), 'cross_border')
+    country_risk = ctrl.Antecedent(np.arange(0, 2, 1), 'country_risk')
+    pep_involvement = ctrl.Antecedent(np.arange(0, 2, 1), 'pep_involvement')
     transaction_type = ctrl.Antecedent(np.arange(0, 3, 1), 'transaction_type')
-    risk = ctrl.Consequent(np.arange(0, 101, 1), 'risk')
 
     # Membership Functions
-    pep_involvement['no'] = fuzz.trapmf(pep_involvement.universe, [0, 0, 0.3, 0.5])
-    pep_involvement['yes'] = fuzz.trapmf(pep_involvement.universe, [0.5, 0.7, 1, 1])
-    cross_border['low'] = fuzz.trapmf(cross_border.universe, [0, 0, 0.3, 0.5])
-    cross_border['high'] = fuzz.trapmf(cross_border.universe, [0.5, 0.7, 1, 1])
-    country_risk['low'] = fuzz.trapmf(country_risk.universe, [0, 0, 0.3, 0.5])
-    country_risk['high'] = fuzz.trapmf(country_risk.universe, [0.5, 0.7, 1, 1])
+    pep_involvement['no'] = fuzz.trimf(pep_involvement.universe, [0, 0, 0.5])
+    pep_involvement['yes'] = fuzz.trimf(pep_involvement.universe, [0.5, 1, 1])
+    cross_border['low'] = fuzz.trimf(cross_border.universe, [0, 0, 1])
+    cross_border['high'] = fuzz.trimf(cross_border.universe, [0, 1, 1])
+    country_risk['low'] = fuzz.trimf(country_risk.universe, [0, 0, 1])
+    country_risk['high'] = fuzz.trimf(country_risk.universe, [0, 1, 1])
     transaction_type['crypto_transfer'] = fuzz.trimf(transaction_type.universe, [0, 0, 1])
     transaction_type['payment'] = fuzz.trimf(transaction_type.universe, [1, 1, 2])
     transaction_type['other'] = fuzz.trimf(transaction_type.universe, [2, 2, 2])
 
-    risk['low'] = fuzz.trimf(risk.universe, [0, 0, 50])
-    risk['medium'] = fuzz.trimf(risk.universe, [20, 50, 80])
+    # Consequent (output)
+    risk = ctrl.Consequent(np.arange(0, 101, 1), 'risk')
+    risk['low'] = fuzz.trimf(risk.universe, [0, 0, 40])
+    risk['medium'] = fuzz.trimf(risk.universe, [30, 50, 70])
     risk['high'] = fuzz.trimf(risk.universe, [60, 100, 100])
 
     # Rules
@@ -56,8 +52,6 @@ def setup_fuzzy_system():
     aml_control = ctrl.ControlSystem([rule1, rule2, rule3, rule4])
     aml_sim = ctrl.ControlSystemSimulation(aml_control)
     return aml_sim
-
-
 
 def evaluate_transaction(row, aml_sim):
     transaction_type_map = {'CRYPTO-TRANSFER': 1, 'PAYMENT': 1, 'OTHER': 2}
@@ -194,141 +188,60 @@ class GraphDataProcessor:
 
         return Data(x=node_features, edge_index=edge_index, edge_attr=edge_attr, y=edge_labels)
 
-def create_consumer():
-    return KafkaConsumer(
-        'kraft-test',
-        bootstrap_servers=['m3-login3.massive.org.au:9092'],
-        auto_offset_reset='latest',  # Start consuming new messages only
-        enable_auto_commit=True,  # Enable auto committing offsets
-        auto_commit_interval_ms=1000,  # Commit every second
-        fetch_max_wait_ms=4000  # Max wait time for data in fetch requests
-    )
-def consumer_thread(msg_queue, timeout_minutes=5):
-    consumer = create_consumer()
-    start_time = time.time()
-    batch_count = 0  # Initialize a counter for batches received
+test_processor = GraphDataProcessor(test_df)
+test_data = test_processor.prepare_graph_data()
+test_loader = DataLoader([test_data], batch_size=32, shuffle=False)
 
-    while time.time() - start_time < timeout_minutes * 60:
-        consumer.poll(timeout_ms=500)
-        for message in consumer:
-            msg_queue.put(message.value)  # Only put the value of the message into the queue
-            batch_count += 1  # Increment the batch counter for each message received
-
-    msg_queue.put(None)  # Signal that consumption is done
-    logging.info(f"Total batches received: {batch_count}")
-
-def processing_thread(msg_queue, model, device, output_directory):
-    while True:
-        message = msg_queue.get()  # Retrieve message from the queue
-        if message is None:  # Check if the consumer has finished
-            break  
-
-        # Process the message using the provided model and device
-        labels, predictions, processed_df = process_message(message, model, device, output_directory)
-
-        if processed_df is not None:
-            threshold = 0.5
-
-            # Convert continuous predictions to binary labels using the threshold
-            predictions_label = (predictions >= threshold).astype(int)
-
-            # Calculate metrics
-            precision = precision_score(labels, predictions_label, zero_division=0)
-            recall = recall_score(labels, predictions_label, zero_division=0)
-            f1 = f1_score(labels, predictions_label, zero_division=0)
-
-            # Conditional AUC calculation
-            auc, ks_statistic = None, None
-            if len(np.unique(labels)) > 1:
-                try:
-                    auc = roc_auc_score(labels, predictions)
-                    fpr, tpr, thresholds = roc_curve(labels, predictions)
-                    ks_statistic = max(tpr - fpr)
-                except ValueError as e:
-                    logging.warning(f"Failed to compute AUC or KS statistic: {e}")
-            else:
-                logging.warning("Cannot compute ROC AUC and KS statistic because only one class is present.")
-
-            # Log and save the metrics
-            log_and_save_metrics(output_directory, precision, recall, f1, auc, ks_statistic)
-
-        # Indicate that processing is complete for this message
-        logging.info("Completed processing a message")
-
-    logging.info("All messages processed")
-
-
-
-def log_and_save_metrics(output_directory, precision, recall, f1, auc, ks_stat):
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"Metrics_{timestamp}.csv"
-    filepath = os.path.join(output_directory, filename)
-    metrics_data = pd.DataFrame({
-        'Precision': [precision],
-        'Recall': [recall],
-        'F1': [f1],
-        'AUC': [auc],
-        'KS_Statistic': [ks_stat],
-    })
-    metrics_data.to_csv(filepath, index=False)
-    logging.info(f"Metrics saved to {filepath}")
-def process_message(message, model, device, output_directory):
-    try:
-        logging.info("Decoding JSON message")
-        decoded_message = json.loads(message.decode('utf-8'))
-        df = pd.DataFrame(decoded_message)
-        logging.info(f"DataFrame created with {len(df)} rows")
-
-        logging.info("Preparing graph data")
-        processor = GraphDataProcessor(df)
-        graph_data = processor.prepare_graph_data().to(device)
-        logging.info(f"Graph data prepared with {graph_data.num_nodes} nodes and {graph_data.num_edges} edges")
-
-        logging.info("Evaluating model")
-        model.eval()
-        with torch.no_grad():
-            output = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr)
-            predictions = torch.sigmoid(output).cpu().numpy()
-            predictions = predictions.flatten()
-            logging.info(f"Predictions obtained with length {len(predictions)}")
-        
-        threshold = 0.5
-        predictions_label = [1 if p >= threshold else 0 for p in predictions]
-        df['Predictions'] = predictions
-        df['Label_Prediction'] = predictions_label
-
-        # Include the reasons for risk scores
-        df['Risk_Reasons'] = processor.df['Risk_Reasons']
-
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"Fuzzy_Results_{timestamp}.csv"
-        filepath = os.path.join(output_directory, filename)
-        df.to_csv(filepath, index=False)
-        logging.info(f"Results saved to {filepath}")
-
-        return df['Label'].tolist(), predictions, df
-    except Exception as e:
-        logging.error(f"Error processing message: {e}")
-        return None, None, None
-
-if __name__ == "__main__":
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    checkpoint = torch.load('hybrid_gcn_lstm_model.pth', map_location=device)
-    model_params = {k: v for k, v in checkpoint['hyperparameters'].items() if k != 'lr'}
-    model = EdgeGCN_LSTM(**model_params)
-    model.to(device)
+def evaluate(model, device, loader, criterion):
     model.eval()
+    y_true, y_pred, y_scores = [], [], []
+    total_loss = 0
+    with torch.no_grad():
+        for data in loader:
+            data = data.to(device)
+            output = model(data.x, data.edge_index, data.edge_attr)
+            loss = criterion(output, data.y.float())
+            total_loss += loss.item()
 
-    output_directory = 'Hybrid_GCN_LSTM'
-    os.makedirs(output_directory, exist_ok=True)
+            probs = torch.sigmoid(output).cpu().numpy()
+            preds = (probs > 0.4).astype(int)
 
-    msg_queue = queue.Queue(maxsize=100)
-    consumer_thread = threading.Thread(target=consumer_thread, args=(msg_queue,))
-    processing_thread = threading.Thread(target=processing_thread, args=(msg_queue, model, device, output_directory))
+            y_scores.extend(probs)
+            y_pred.extend(preds)
+            y_true.extend(data.y.cpu().numpy())
 
-    consumer_thread.start()
-    processing_thread.start()
+    f1 = f1_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred)
+    recall = recall_score(y_true, y_pred)
+    auc = roc_auc_score(y_true, y_scores)
+    fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+    ks_statistic = max(tpr - fpr)
 
-    consumer_thread.join()
-    processing_thread.join()
+    return total_loss / len(loader), f1, precision, recall, auc, ks_statistic
 
+# Load the best model from a local path, assuming it is synced to Google Drive
+best_trial_model_path = f"hybrid_gcn_lstm_model.pth"
+checkpoint = torch.load(best_trial_model_path)
+
+# Initialize and load the model
+model = EdgeGCN_LSTM(
+    hidden_channels=checkpoint['hyperparameters']['hidden_channels'],
+    lstm_hidden_channels=checkpoint['hyperparameters']['lstm_hidden_channels'],
+    out_channels=1,
+    dropout_rate=checkpoint['hyperparameters']['dropout_rate']
+).to(device)
+model.load_state_dict(checkpoint['state_dict'])
+
+# Define loss function
+criterion = nn.BCEWithLogitsLoss()
+
+# Evaluate on test set
+test_loss, test_f1, test_precision, test_recall, test_auc, test_ks_statistic = evaluate(model, device, test_loader, criterion)
+
+print("Test set metrics:")
+print(f"    Loss: {test_loss}")
+print(f"    F1 Score: {test_f1}")
+print(f"    Precision: {test_precision}")
+print(f"    Recall: {test_recall}")
+print(f"    AUC: {test_auc}")
+print(f"    KS Statistic: {test_ks_statistic}")

@@ -1,0 +1,18 @@
+#!/bin/bash
+#SBATCH --job-name=Producer_Risk_Based
+#SBATCH --output=Log/result_risk_based_%j.txt  # Save output to file named result_JOBID.txt
+#SBATCH --ntasks=1              # Run a single task/job
+#SBATCH --cpus-per-task=8       # Number of CPU cores per task
+#SBATCH --mem=4G                # Total memory for the job
+#SBATCH --time=01:00:00         # Time limit hh:mm:ss
+
+
+
+# Activate the virtual environment
+source venv/bin/activate
+
+# Run the Python script
+python 6.Producer_Risk_Based.py
+
+# Deactivate the virtual environment
+deactivate

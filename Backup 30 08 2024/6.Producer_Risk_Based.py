@@ -16,7 +16,7 @@ def send_data_with_count_window(filename, batch_size=100, window_size=100000, de
     # Read the CSV into a DataFrame
     df = pd.read_csv(filename)
     df = df.sort_values(by='Time_step')
-    df=df.head(500)
+   # df=df.head(100000)
     window = []
     
     # Iterate over the DataFrame row by row
